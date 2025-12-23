@@ -1,0 +1,27 @@
+# Esempio di configurazione per la scansione delle directory
+# Questo file definisce quali directory scansionare e come preprocessare i file
+
+# Directory da scansionare
+[[directories]]
+path = "Movies"
+media_type = "movie"
+pattern_list = ["generic"]
+ignore = false
+
+[[directories]]
+path = "TVShows"
+media_type = "tv"
+pattern_list = ["generic"]
+ignore = false
+
+[[directories]]
+path = "ToProcess"
+media_type = ""  # Sarà determinato automaticamente
+pattern_list = ["generic", "cleanup"]
+ignore = false
+
+# Pattern di preprocessamento
+[patterns.generic]
+
+[patterns.cleanup]
+# Esempio: rimuovi tag indesiderati dai nomi file

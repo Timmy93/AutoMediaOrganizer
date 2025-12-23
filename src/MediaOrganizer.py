@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from src.TMDBClient import TMDBClient
+from src.Database import Database
 
 # Configurazioni di default
 config_dir = "Config"
@@ -44,6 +45,18 @@ class MediaOrganizer:
             self.config['tmdb']['api_key'],
             self.config['tmdb']['language']
         )
+        # Initialize database connection if configured
+        self.db = None
+        if self.config.get('database', {}).get('enabled', False):
+            try:
+                self.db = Database(self.config)
+                self.logger.info("Database integration enabled")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize database: {e}")
+                self.logger.warning("Continuing without database integration")
+        else:
+            self.logger.info("Database integration disabled")
+        
         # Regex per tv
         self.tv_regex = re.compile(
             self.config['regex']['tv_pattern'],
@@ -266,10 +279,27 @@ class MediaOrganizer:
         if not movie_info:
             self.logger.warning(f"Film non trovato su TMDB: {file_info['path'].name}")
             return False
+        
+        # Save to database if enabled
+        movie_id = None
+        if self.db:
+            movie_id = self.db.insert_movie(movie_info)
+        
         # Genera percorso di destinazione
         dest_path = self._generate_movie_path(movie_info, file_info)
         # Sposta/copia il file
-        return self._link_or_copy_file(file_info, dest_path)
+        success = self._link_or_copy_file(file_info, dest_path)
+        
+        # Save file record to database if enabled
+        if success and self.db and movie_id:
+            self.db.insert_file(
+                str(file_info['original_path']),
+                str(dest_path),
+                'movie',
+                movie_id=movie_id
+            )
+        
+        return success
 
     def process_tv_show(self, file_info: dict) -> bool:
         """Processa un file serie TV"""
@@ -288,12 +318,27 @@ class MediaOrganizer:
             self.logger.warning(f"Serie TV non trovata su TMDB: {file_path.name}")
             return False
 
+        # Save TV show to database if enabled
+        tv_show_id = None
+        if self.db:
+            tv_show_id = self.db.insert_tv_show(tv_info)
+
         # Ottiene dettagli dell'episodio
         episode_info = self.tmdb_client.get_episode_details(
             tv_info['id'],
             parsed_info['season'],
             parsed_info['episode']
         )
+
+        # Save episode to database if enabled
+        episode_id = None
+        if self.db and tv_show_id:
+            episode_id = self.db.insert_episode(
+                tv_show_id,
+                episode_info,
+                parsed_info['season'],
+                parsed_info['episode']
+            )
 
         # Genera percorso di destinazione
         dest_path = self._generate_tv_path(
@@ -304,7 +349,19 @@ class MediaOrganizer:
             file_info
         )
         # Sposta/copia il file
-        return self._link_or_copy_file(file_info, dest_path)
+        success = self._link_or_copy_file(file_info, dest_path)
+        
+        # Save file record to database if enabled
+        if success and self.db and tv_show_id:
+            self.db.insert_file(
+                str(file_info['original_path']),
+                str(dest_path),
+                'tv',
+                tv_show_id=tv_show_id,
+                episode_id=episode_id
+            )
+        
+        return success
 
     def apply_pattern_rule(self, file_info: dict, pattern: dict) -> dict:
         result = {
@@ -394,6 +451,22 @@ class MediaOrganizer:
                     if str(file_path) in already_processed_files:
                         self.logger.debug(f"File già processato in precedenza, saltato: {file_path}")
                         continue
+                    
+                    # Check database for duplicates if enabled
+                    if self.db:
+                        if self.db.is_file_processed(str(file_path)):
+                            self.logger.info(f"File già presente nel database, saltato: {file_path}")
+                            self.stats['skipped'] += 1
+                            continue
+                        
+                        # Check for duplicate by file hash
+                        duplicate = self.db.is_duplicate_by_hash(str(file_path))
+                        if duplicate:
+                            self.logger.warning(f"Rilevato duplicato per hash: {file_path}")
+                            self.logger.warning(f"File originale: {duplicate.get('file_path')}")
+                            self.stats['skipped'] += 1
+                            continue
+                    
                     if not file_path.is_file():
                         continue
                     if not self._is_video_file(file_path):

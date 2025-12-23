@@ -1,0 +1,58 @@
+# Esempio di configurazione per AutoMediaOrganizer
+# Questo file mostra un esempio della configurazione richiesta
+
+# Configurazione database MariaDB
+[database]
+enabled = true  # Abilita/disabilita l'integrazione del database
+host = "localhost"
+port = 3306
+user = "automedia_user"
+password = "your_password_here"
+database = "automediaorganizer"
+
+# Configurazione TMDB API
+[tmdb]
+api_key = "your_tmdb_api_key_here"
+language = "it-IT"
+
+# Pattern regex per identificazione file
+[regex]
+tv_pattern = '(?P<title>.+?)[\.\s]+[Ss](?P<season>\d{1,2})[Ee](?P<episode>\d{1,2})'
+movie_pattern = '(?P<title>.+?)[\.\s]+\((?P<year>\d{4})\)'
+
+# Percorsi file
+[paths]
+source_folder = "/path/to/source"
+destination_folder = "/path/to/destination"
+movie_folder = "Movies"
+tv_show_folder = "TVShows"
+scan_only_selected_subdir = true
+
+# Pattern di naming per output
+[naming]
+movie_pattern = "{title} ({year})"
+tv_show_pattern = "{title}/Season {season:02d}"
+episode_pattern = "{title} - S{season:02d}E{episode:02d} - {episode_title}"
+
+# Opzioni di processamento
+[options]
+video_extensions = [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm"]
+create_directories = true
+skip_existing = true
+copy_instead_of_link = false
+episode_padding = 2
+season_padding = 2
+
+# Configurazione log
+[Log]
+logFile = "AutoMediaOrganizer.log"
+logLevel = "INFO"
+
+# Configurazione logging dei pacchetti
+[[Packages]]
+name = "requests"
+log_level = "WARNING"
+
+[[Packages]]
+name = "urllib3"
+log_level = "WARNING"
