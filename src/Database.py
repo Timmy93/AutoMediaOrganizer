@@ -1,5 +1,6 @@
 import logging
 import hashlib
+import os
 from typing import Optional, Dict, Any, List
 import pymysql
 from pymysql.cursors import DictCursor
@@ -393,7 +394,6 @@ class Database:
             # Calculate file hash and size
             file_hash = self._calculate_file_hash(file_path)
             try:
-                import os
                 file_size = os.path.getsize(file_path)
             except:
                 file_size = None
