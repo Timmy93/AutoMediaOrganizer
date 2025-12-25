@@ -20,7 +20,9 @@ root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 
 def print_errors(file_processing: dict):
-    if not file_processing['processing_outcome']:
+    preprocessing_successful = file_processing['processing_outcome'].get('outcome', False)
+    processing_successful = file_processing['processing_outcome'].get('outcome', False)
+    if not processing_successful:
         print(f"Analizzato: {file_processing['name'].name}")
         print(f">>> Preprocessing applicati: {len(file_processing['preprocessing_outcome'])}")
         out = []
@@ -30,7 +32,7 @@ def print_errors(file_processing: dict):
             else:
                 out.append("✅" + result['pattern'])
         print(f">>> Patterns: {'|'.join(out)}")
-        print(f">>> Esito processamento: {'Successo' if file_processing['processing_outcome'] else 'Saltato'}")
+        print(f">>> Esito processamento: {'Successo' if preprocessing_successful else 'Saltato'}")
 
 
 class MediaOrganizer:
@@ -75,6 +77,7 @@ class MediaOrganizer:
         file_info = {
             'original_path': file_path,
             'path': file_path,
+            'destination_subfolder': None,
             'processing_patterns': ['generic'],
             'media_type': '',
             'year': None
@@ -93,7 +96,11 @@ class MediaOrganizer:
         return file_info
 
     def get_info_from_path(self, file_info: dict):
-        """Analizza il percorso del file e determina il tipo di media"""
+        """
+        Analizza il percorso del file ed estrae informazioni sul file in base alla configurazione di scansione
+        :param file_info:
+        :return:
+        """
         base_path = self.config['paths']['source_folder']
         relative_path = file_info['path'].relative_to(base_path)
         for scanned_dir in self.scan_config.get('directories', []):
@@ -103,6 +110,7 @@ class MediaOrganizer:
                 file_info['scanned_dir'] = dir_path
                 file_info['processing_patterns'] = scanned_dir.get('pattern_list', ['generic'])
                 file_info['ignore'] = scanned_dir.get('ignore', False)
+                file_info['destination_subfolder'] = scanned_dir.get('destination_subfolder', '')
                 media_type = scanned_dir.get('media_type', '').lower()
                 if media_type in allowed_media_types:
                     file_info['media_type'] = media_type
@@ -141,11 +149,11 @@ class MediaOrganizer:
             title=movie_info['title'],
             year=movie_info.get('release_date', '')[:4]
         )
-
         # Sanitizza il nome
         folder_name = self._sanitize_filename(folder_name)
         dest_folder = os.path.join(
             Path(self.config['paths']['destination_folder']),
+            file_info.get('destination_subfolder'),
             Path(self.config['paths']['movie_folder']),
             folder_name
         )
@@ -192,6 +200,7 @@ class MediaOrganizer:
         # Percorso finale
         dest_folder = os.path.join(
             Path(self.config['paths']['destination_folder']),
+            file_info.get('destination_subfolder'),
             Path(self.config['paths']['tv_show_folder']),
             show_folder
         )
@@ -210,7 +219,7 @@ class MediaOrganizer:
         """Verifica se un file è un file video"""
         return file_path.suffix.lower() in self.config['options']['video_extensions']
 
-    def _link_or_copy_file(self, file_info: dict, destination: Path) -> bool:
+    def _link_or_copy_file(self, file_info: dict, destination: Path) -> dict:
         """Sposta o copia un file dalla sorgente alla destinazione"""
         try:
             # Crea la directory di destinazione se necessario
@@ -220,7 +229,7 @@ class MediaOrganizer:
             # Controlla se il file esiste già
             if destination.exists() and self.config['options'].get('skip_existing', True):
                 self.logger.info(f"File già esistente, saltato: {destination}")
-                return False
+                return {'outcome': True, 'error': 'File già esistente, saltato'}
 
             # Copia o sposta
             if self.config['options'].get('copy_instead_of_link', False):
@@ -229,11 +238,11 @@ class MediaOrganizer:
             else:
                 os.link(file_info.get('original_path'), destination)
                 self.logger.info(f"Linkato: {file_info.get('original_path').name} -> {destination}")
-            return True
+            return {'outcome': True, 'error': None}
 
         except Exception as e:
             self.logger.exception(f"Errore nello spostamento/copia di {file_info.get('original_path').name}: {e}")
-            return False
+            return {'outcome': False, 'error': str(e)}
 
     def pre_process_file(self, file_info: dict, file_processing: dict) -> dict:
         """Applica le regole di preprocessamento al file"""
@@ -249,7 +258,7 @@ class MediaOrganizer:
                     file_processing['preprocessing_outcome'].append(pattern_result)
         return file_info
 
-    def process_movie(self, file_info: dict) -> bool:
+    def process_movie(self, file_info: dict) -> dict:
         """Processa un file film"""
         self.logger.info(f"Processando film: {file_info['path'].name}")
 
@@ -257,7 +266,7 @@ class MediaOrganizer:
         self._parse_movie_filename(file_info)
         if not file_info.get('title') or not file_info.get('year'):
             self.logger.warning(f"Impossibile estrarre informazioni da: {file_info['path'].name}")
-            return False
+            return {'outcome': False, 'error': 'Parsing fallito'}
         # Cerca su TMDB
         movie_info = self.tmdb_client.search_movie(
             file_info['title'],
@@ -265,13 +274,13 @@ class MediaOrganizer:
         )
         if not movie_info:
             self.logger.warning(f"Film non trovato su TMDB: {file_info['path'].name}")
-            return False
+            return {'outcome': False, 'error': f'Media non disponibile su TMDB [{file_info['path'].name}]'}
         # Genera percorso di destinazione
         dest_path = self._generate_movie_path(movie_info, file_info)
         # Sposta/copia il file
         return self._link_or_copy_file(file_info, dest_path)
 
-    def process_tv_show(self, file_info: dict) -> bool:
+    def process_tv_show(self, file_info: dict) -> dict:
         """Processa un file serie TV"""
         file_path = file_info['path']
         self.logger.info(f"Processando serie TV: {file_path.name}")
@@ -280,13 +289,13 @@ class MediaOrganizer:
         parsed_info = self._parse_tv_filename(file_path.stem)
         if not parsed_info:
             self.logger.warning(f"Impossibile estrarre informazioni da: {file_path.name}")
-            return False
+            return {'outcome': False, 'error': 'Parsing fallito'}
 
         # Cerca la serie su TMDB
         tv_info = self.tmdb_client.search_tv_show(parsed_info['title'], file_info)
         if not tv_info:
             self.logger.warning(f"Serie TV non trovata su TMDB: {file_path.name}")
-            return False
+            return {'outcome': False, 'error': f'Media non disponibile su TMDB [{parsed_info['title']}]'}
 
         # Ottiene dettagli dell'episodio
         episode_info = self.tmdb_client.get_episode_details(
@@ -374,10 +383,12 @@ class MediaOrganizer:
           5. Esporta il file nel catalogo
         :return: None
         """
+        print("Starting scan and organize process...")
         self.reload_all_config()
         self.reset_stats()
+        self.logger.info("Modalità debug disabilitata")
         self.load_info()
-        already_processed_files = {str(file_stat['name']) for file_stat in self.stats['files'] if file_stat['processing_outcome'] is True}
+        already_processed_files = {str(file_stat['name']) for file_stat in self.stats['files'] if file_stat['processing_outcome'].get('outcome', False)}
         self.logger.info(f"Caricati {len(already_processed_files)} file già processati con successo in precedenza.")
         source_folder = Path(self.config['paths']['source_folder'])
         if not source_folder.exists():
@@ -385,31 +396,21 @@ class MediaOrganizer:
             return
         selected_dirs = self.get_dir_to_scan()
 
-
         # Itera ricorsivamente attraverso tutti i file
         for selected_dir in selected_dirs:
             for file_path in selected_dir.rglob('*'):
+                file_processing = {
+                    'name': file_path,
+                    'preprocessing_outcome': [],
+                    'processing_outcome': {'outcome': False, 'error': 'Not processed'},
+                    'skipped': False,
+                }
                 try:
-                    # Salta se non è un file video
-                    if str(file_path) in already_processed_files:
-                        self.logger.debug(f"File già processato in precedenza, saltato: {file_path}")
+                    if self.skip_this_file(file_path, already_processed_files):
                         continue
-                    if not file_path.is_file():
-                        continue
-                    if not self._is_video_file(file_path):
-                        self.logger.debug(f"File non video, saltato: {file_path}")
-                        continue
-
-                    file_processing = {
-                        'name': file_path,
-                        'preprocessing_outcome': [],
-                        'processing_outcome': False,
-                        'skipped': False,
-                    }
-
                     # Determina il tipo di media
                     file_info = self._get_media_info(file_path)
-                    # Preprocessa il file in base alle regole definite
+                    # Pre-processa il file in base alle regole definite
                     self.pre_process_file(file_info, file_processing)
                     # Processa in base al tipo di media
                     self.process_file(file_info, file_processing)
@@ -423,6 +424,7 @@ class MediaOrganizer:
 
         # Salva lo stato del processamento
         self.store_info()
+        print("Scan and organize process completed.")
 
         # Stampa statistiche
         self.logger.info("=" * 60)
@@ -433,6 +435,19 @@ class MediaOrganizer:
         self.logger.info(f"File saltati: {self.stats['skipped']}")
         self.logger.info(f"Errori: {self.stats['errors']}")
         self.logger.info("=" * 60)
+
+    def skip_this_file(self, file_path, already_processed_files: set) -> bool:
+        if str(file_path) in already_processed_files:
+            self.logger.debug(f"File già processato in precedenza, saltato: {file_path}")
+            media_to_skip = True
+        elif not file_path.is_file():
+            media_to_skip = True
+        elif not self._is_video_file(file_path):
+            self.logger.debug(f"File non video, saltato: {file_path}")
+            media_to_skip = True
+        else:
+            media_to_skip = False
+        return media_to_skip
 
     def store_info(self):
         stats_file = os.path.join(root_dir, config_dir, 'processing_stats.json')
@@ -461,7 +476,7 @@ class MediaOrganizer:
             with open(stats_file, 'r', encoding='utf-8') as f:
                 restored_stat = json.load(f)
                 for file_stat in restored_stat:
-                    if file_stat['processing_outcome'] is True:
+                    if file_stat['processing_outcome'].get('outcome', False) is True:
                         self.stats['files'].append(file_stat)
             self.logger.info(f"Stato del processamento caricato da: {stats_file}")
         except Exception as e:
@@ -470,20 +485,27 @@ class MediaOrganizer:
     def process_file(self, file_info: dict, file_processing: dict):
         try:
             if file_info.get('media_type') == 'movie':
-                if self.process_movie(file_info):
+                result = self.process_movie(file_info)
+                if result['outcome']:
                     self.stats['movies_processed'] += 1
-                    file_processing['processing_outcome'] = True
+                    file_processing['processing_outcome'] = result
                 else:
                     self.stats['skipped'] += 1
             elif file_info.get('media_type') == 'tv':
-                if self.process_tv_show(file_info):
+                result = self.process_tv_show(file_info)
+                if result['outcome']:
                     self.stats['tv_processed'] += 1
-                    file_processing['processing_outcome'] = True
+                    file_processing['processing_outcome'] = result
                 else:
                     self.stats['skipped'] += 1
+            else:
+                self.logger.warning(f"Tipo di media non supportato per il file: {file_info['name']}")
+                self.stats['skipped'] += 1
+                file_processing['processing_outcome'] = {'outcome': False, 'error': 'Tipo di media non supportato'}
         except Exception as e:
             self.logger.exception(f"Errore nel processare [{file_info.get('media_type')}] {file_info['name']}: {e}")
             self.stats['errors'] += 1
+            file_processing['processing_outcome'] = {'outcome': False, 'error': str(e)}
 
     def get_dir_to_scan(self) -> list:
         """Restituisce la lista delle directory da scansionare"""
