@@ -1,1 +1,4 @@
+# Required for TMDB API interactions
 requests==2.32.5
+# Required for MariaDB database connectivity
+PyMySQL

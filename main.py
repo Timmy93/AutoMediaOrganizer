@@ -9,7 +9,7 @@ def initialize_log(config):
     Initialize log file
     :return:
     """
-    log_section = "Log"
+    log_section = "log"
     packages_section = "Packages"
     log_file_field, default_log_file = "logFile",  "AutoMediaOrganizer.log"
     log_level_field, default_log_level = "logLevel", "DEBUG"

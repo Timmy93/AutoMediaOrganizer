@@ -9,6 +9,7 @@ from ftplib import error_perm
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from src.Database import Database
 from src.TMDBClient import TMDBClient
 
 # Configurazioni di default
@@ -45,6 +46,13 @@ class MediaOrganizer:
         self.tmdb_client = TMDBClient(
             self.config['tmdb']['api_key'],
             self.config['tmdb']['language']
+        )
+        self.db = Database(
+            host=self.config['db'].get('host'),
+            user=self.config['db'].get('user'),
+            password=self.config['db'].get('password'),
+            database=self.config['db'].get('database'),
+            port=self.config['db'].get('port', 3306)
         )
         # Regex per tv
         self.tv_regex = re.compile(
@@ -223,8 +231,7 @@ class MediaOrganizer:
         """Sposta o copia un file dalla sorgente alla destinazione"""
         try:
             # Crea la directory di destinazione se necessario
-            if self.config['options'].get('create_directories', True):
-                destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.parent.mkdir(parents=True, exist_ok=True)
 
             # Controlla se il file esiste già
             if destination.exists() and self.config['options'].get('skip_existing', True):
@@ -245,18 +252,28 @@ class MediaOrganizer:
             return {'outcome': False, 'error': str(e)}
 
     def pre_process_file(self, file_info: dict, file_processing: dict) -> dict:
-        """Applica le regole di preprocessamento al file"""
+        """Applica le regole di pre-processamento al file"""
         for pattern_name in file_info.get('processing_patterns', []):
             pattern_rules = self.scan_config.get('patterns', {}).get(pattern_name, {})
+            self.check_skip(file_info, file_processing)
             for pattern in pattern_rules:
-                if file_info.get('ignore', False):
-                    self.logger.debug(f"File ignorato in base alla configurazione: {file_info['path']}")
-                    self.stats['skipped'] += 1
-                    file_processing['skipped'] = True
                 pattern_result = self.apply_pattern_rule(file_info, pattern)
+                # Salva solo i pattern applicati o con errori
                 if pattern_result.get('applied', False) or pattern_result.get('error'):
                     file_processing['preprocessing_outcome'].append(pattern_result)
+                # Se il file è stato marcato come ignorato, esce dal ciclo
+                self.check_skip(file_info, file_processing)
+                if file_info.get('ignore', False):
+                    break
         return file_info
+
+    def check_skip(self, file_info: dict, file_processing: dict):
+        """Controlla se il file deve essere ignorato"""
+        if file_info.get('ignore', False):
+            self.logger.info(f"File ignorato in base alla configurazione: {file_info['path'].name}")
+            self.stats['skipped'] += 1
+            file_processing['skipped'] = True
+            file_processing['processing_outcome'] = {'outcome': True, 'error': 'File ignorato durante pre-processing'}
 
     def process_movie(self, file_info: dict) -> dict:
         """Processa un file film"""
@@ -265,7 +282,7 @@ class MediaOrganizer:
         # Estrae informazioni dal nome del file
         self._parse_movie_filename(file_info)
         if not file_info.get('title') or not file_info.get('year'):
-            self.logger.warning(f"Impossibile estrarre informazioni da: {file_info['path'].name}")
+            self.logger.warning(f"Film - Impossibile estrarre informazioni da: {file_info['path'].name}")
             return {'outcome': False, 'error': 'Parsing fallito'}
         # Cerca su TMDB
         movie_info = self.tmdb_client.search_movie(
@@ -273,12 +290,29 @@ class MediaOrganizer:
             file_info.get('year')
         )
         if not movie_info:
-            self.logger.warning(f"Film non trovato su TMDB: {file_info['path'].name}")
-            return {'outcome': False, 'error': f'Media non disponibile su TMDB [{file_info['path'].name}]'}
+            self.logger.info(f"Film non trovato su TMDB: {file_info['path'].name}")
+            movie_info = self.tmdb_client.search_movie(
+                self.guess_correct_title(file_info['original_path'].stem)
+            )
+            if not movie_info:
+                self.logger.warning(f"Film non trovato su TMDB (guessing): {file_info['path'].name}")
+                return {'outcome': False, 'error': f'Media non disponibile su TMDB [{file_info['path'].name}]'}
         # Genera percorso di destinazione
         dest_path = self._generate_movie_path(movie_info, file_info)
         # Sposta/copia il file
         return self._link_or_copy_file(file_info, dest_path)
+
+    def guess_correct_title(self, title: str) -> str:
+        """Prova a indovinare il titolo corretto rimuovendo blocchi di testo non necessari"""
+        # Rimuove contenuti tra parentesi tonde o quadre
+        title = re.sub(r'\[.*?]|\(.*?\)', '', title)
+        # Rimuove parole comuni non necessarie
+        common_words = ['HD', '1080p', '720p', 'BluRay', 'WEBRip', 'x264', 'YIFY', 'DVDRip']
+        for word in common_words:
+            title = re.sub(r'\b' + re.escape(word) + r'\b', '', title, flags=re.IGNORECASE)
+        # Pulisce spazi multipli
+        title = ' '.join(title.split())
+        return title.strip()
 
     def process_tv_show(self, file_info: dict) -> dict:
         """Processa un file serie TV"""
@@ -288,7 +322,7 @@ class MediaOrganizer:
         # Estrae informazioni dal nome del file
         parsed_info = self._parse_tv_filename(file_path.stem)
         if not parsed_info:
-            self.logger.warning(f"Impossibile estrarre informazioni da: {file_path.name}")
+            self.logger.warning(f"Serie TV - Impossibile estrarre informazioni da: {file_path.name}")
             return {'outcome': False, 'error': 'Parsing fallito'}
 
         # Cerca la serie su TMDB
@@ -344,7 +378,7 @@ class MediaOrganizer:
 
     def regex_rename(self, file_info: dict, rename_rule) -> bool:
         def repl(m):
-            d = m.groupdict()
+            d = m.groupdict() | folder_info
             if episode_padding := rename_rule.get("episode_padding") is None:
                 episode_padding = self.config.get('options', {}).get('episode_padding', 0)
             if season_padding := rename_rule.get("season_padding") is None:
@@ -354,10 +388,10 @@ class MediaOrganizer:
                 if ep_offset := rename_rule.get("episode_offset", 0):
                     d["episode"] = int(d["episode"]) + ep_offset
                     d["episode"] = str(d["episode"]).zfill(episode_padding)
+            if (season_number := rename_rule.get("season_number")) is not None:
+                d["season"] = season_number
             if d.get("season"):
-                if (season_number := rename_rule.get("season_number")) is not None:
-                    d["season"] = season_number
-                elif season_offset := rename_rule.get("season_offset", 0):
+                if season_offset := rename_rule.get("season_offset", 0):
                     d["season"] = int(d["season"]) + season_offset
                 d["season"] = str(d["season"]).zfill(season_padding)
             return rename_rule.get('substitution').format(**d)
@@ -366,8 +400,21 @@ class MediaOrganizer:
             self.logger.debug("Nessuna corrispondenza trovata per la regola di rinomina.")
             return False
         else:
+            folder_info = {}
+            if "folder_regex" in rename_rule:
+                # Estrae informazioni dalla cartella padre
+                folder_match = re.match(rename_rule.get('folder_regex'), os.path.basename(os.path.dirname(file_info['path'])))
+                if folder_match:
+                    folder_info = folder_match.groupdict()
             self.logger.debug(f"Applicando regola di rinomina: {rename_rule.get('regex')} -> {rename_rule.get('substitution')}")
-            rename_rule = re.sub(rename_rule.get('regex'), repl, file_info['path'].stem)
+            try:
+                rename_rule = re.sub(rename_rule.get('regex'), repl, file_info['path'].stem)
+            except re.error as e:
+                self.logger.error(f"Errore nella sostituzione della regola di rinomina: {e}")
+                return False
+            except KeyError as e:
+                self.logger.error(f"Valori mancanti per la rinomina [{', '.join(e.args)}]")
+                return False
             file_info['path'] = Path(str(os.path.join(file_info['path'].parent, rename_rule + file_info['path'].suffix)))
             return True
 
@@ -386,9 +433,7 @@ class MediaOrganizer:
         print("Starting scan and organize process...")
         self.reload_all_config()
         self.reset_stats()
-        self.logger.info("Modalità debug disabilitata")
-        self.load_info()
-        already_processed_files = {str(file_stat['name']) for file_stat in self.stats['files'] if file_stat['processing_outcome'].get('outcome', False)}
+        already_processed_files = self.load_info()
         self.logger.info(f"Caricati {len(already_processed_files)} file già processati con successo in precedenza.")
         source_folder = Path(self.config['paths']['source_folder'])
         if not source_folder.exists():
@@ -436,7 +481,7 @@ class MediaOrganizer:
         self.logger.info(f"Errori: {self.stats['errors']}")
         self.logger.info("=" * 60)
 
-    def skip_this_file(self, file_path, already_processed_files: set) -> bool:
+    def skip_this_file(self, file_path, already_processed_files: list) -> bool:
         if str(file_path) in already_processed_files:
             self.logger.debug(f"File già processato in precedenza, saltato: {file_path}")
             media_to_skip = True
@@ -459,6 +504,7 @@ class MediaOrganizer:
                 'processing_outcome': file_stat['processing_outcome'],
                 'skipped': file_stat['skipped'],
             })
+        self.store_in_db(payload)
         self.stats['files'] = payload
         try:
             with open(stats_file, 'w', encoding='utf-8') as f:
@@ -467,24 +513,28 @@ class MediaOrganizer:
         except Exception as e:
             self.logger.error(f"Errore nel salvare lo stato del processamento: {e}")
 
-    def load_info(self):
-        stats_file = os.path.join(root_dir, config_dir, 'processing_stats.json')
-        if not os.path.exists(stats_file):
-            self.logger.info("Nessun file di stato del processamento trovato.")
-            return
+    def store_in_db(self, files_stats: list):
+        for file_stat in files_stats:
+            try:
+                self.db.insert_media_entry(file_stat)
+            except Exception as e:
+                self.logger.error(f"Errore nell'inserire il file nel database: {file_stat['name']} - Errore: {e}")
+
+    def load_info(self) -> list:
         try:
-            with open(stats_file, 'r', encoding='utf-8') as f:
-                restored_stat = json.load(f)
-                for file_stat in restored_stat:
-                    if file_stat['processing_outcome'].get('outcome', False) is True:
-                        self.stats['files'].append(file_stat)
-            self.logger.info(f"Stato del processamento caricato da: {stats_file}")
+            return self.db.load_processed_files()
+
         except Exception as e:
             self.logger.error(f"Errore nel caricare lo stato del processamento: {e}")
+            return []
 
     def process_file(self, file_info: dict, file_processing: dict):
         try:
-            if file_info.get('media_type') == 'movie':
+            if file_info.get('ignore', False):
+                self.logger.info(f"File saltato durante il pre-processamento: {file_info['path'].name}")
+                self.stats['skipped'] += 1
+                return
+            elif file_info.get('media_type') == 'movie':
                 result = self.process_movie(file_info)
                 if result['outcome']:
                     self.stats['movies_processed'] += 1
