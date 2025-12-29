@@ -1,0 +1,39 @@
+##################################
+# Software Configuration File -- AutoMediaOrganizer
+# Any changes made here **will override** by future updates.
+# To customize settings, please use 'config.toml' instead.
+##################################
+
+[log]
+# Logging configuration
+logFile = "AutoMediaOrganizer.log"
+logLevel = "INFO"
+
+[options]
+# General options for media organization
+copy_instead_of_link = false
+skip_existing = true
+season_padding = 2
+episode_padding = 2
+# File extensions considered for media files
+video_extensions = [".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v"]
+subtitle_extensions = [".srt", ".sub", ".ass", ".ssa"]
+
+[naming]
+# Pattern used for organizing and naming movies and TV shows
+movie_pattern = "{title} ({year})"
+tv_show_pattern = "{title}/Season {season:02d}"
+
+[regex]
+# Regex used to identify movies and TV shows
+movie_pattern = '''(?P<title>.+?)[\.\s\(\[]+(?P<year>\d{4})'''
+tv_pattern = '''(?P<title>.+?)[\.\s\_\-]+[Ss]?(?P<season>\d{1,2})[EexX](?P<episode>\d{1,2})'''
+
+# Reduce logging verbosity for specific packages
+[[Packages]]
+name = "urllib3"
+log_level = "WARNING"
+[[Packages]]
+name = "requests"
+log_level = "WARNING"
+

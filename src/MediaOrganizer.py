@@ -5,17 +5,16 @@ import os
 import re
 import shutil
 import tomllib
-from ftplib import error_perm
 from pathlib import Path
-from typing import Optional, Dict, Any
-
+from typing import Optional, Dict
+from pymysql import OperationalError
 from src.Database import Database
 from src.TMDBClient import TMDBClient
 
 # Configurazioni di default
 config_dir = "Config"
 config_file_name = 'config.toml'
-scan_config_file = "scan_config.toml"
+sys_config_file_name = 'software_config.toml'
 allowed_media_types = ['movie', 'tv']
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -41,7 +40,7 @@ class MediaOrganizer:
 
     def __init__(self, config: dict):
         self.config = config
-        self.scan_config = reload_scan_config()
+        self.scan_config = {}
         self.logger = logging.getLogger(__name__)
         self.tmdb_client = TMDBClient(
             self.config['tmdb']['api_key'],
@@ -435,37 +434,52 @@ class MediaOrganizer:
         self.reset_stats()
         already_processed_files = self.load_info()
         self.logger.info(f"Caricati {len(already_processed_files)} file già processati con successo in precedenza.")
-        source_folder = Path(self.config['paths']['source_folder'])
-        if not source_folder.exists():
-            self.logger.error(f"La cartella sorgente non esiste: {source_folder}")
-            return
-        selected_dirs = self.get_dir_to_scan()
+
 
         # Itera ricorsivamente attraverso tutti i file
-        for selected_dir in selected_dirs:
-            for file_path in selected_dir.rglob('*'):
-                file_processing = {
-                    'name': file_path,
-                    'preprocessing_outcome': [],
-                    'processing_outcome': {'outcome': False, 'error': 'Not processed'},
-                    'skipped': False,
-                }
-                try:
-                    if self.skip_this_file(file_path, already_processed_files):
-                        continue
-                    # Determina il tipo di media
-                    file_info = self._get_media_info(file_path)
-                    # Pre-processa il file in base alle regole definite
-                    self.pre_process_file(file_info, file_processing)
-                    # Processa in base al tipo di media
-                    self.process_file(file_info, file_processing)
-                    self.stats['files'].append(file_processing)
+        for main_dir in self.config['paths']['selected_dir']:
+            self.config['paths']['source_folder'] = main_dir.get('source_folder')
+            self.config['paths']['destination_folder'] = main_dir.get('destination_folder')
+            self.scan_config = main_dir.get('scan_config')
 
-                    print_errors(file_processing)
+            try:
+                source_folder = Path(self.config['paths']['source_folder'])
+                if not source_folder.exists():
+                    self.logger.error(f"La cartella sorgente non esiste: {source_folder}")
+                    print(f"La cartella sorgente non esiste: {source_folder}")
+                    continue
+            except TypeError as e:
+                self.logger.error(f"Percorso sorgente non valido: {self.config['paths']['source_folder']} -> {e}")
+                print(f"Percorso sorgente non valido: {self.config['paths']['source_folder']}")
+                continue
 
-                except Exception as e:
-                    self.logger.exception(f"Errore nella gestione di {file_path}: {e}")
-                    self.stats['errors'] += 1
+            selected_dirs = self.get_dir_to_scan()
+            print(f"Scanning directory: {source_folder} - Found {len(selected_dirs)} subdirectories to scan.")
+
+            for selected_dir in selected_dirs:
+                for file_path in selected_dir.rglob('*'):
+                    file_processing = {
+                        'name': file_path,
+                        'preprocessing_outcome': [],
+                        'processing_outcome': {'outcome': False, 'error': 'Not processed'},
+                        'skipped': False,
+                    }
+                    try:
+                        if self.skip_this_file(file_path, already_processed_files):
+                            continue
+                        # Determina il tipo di media
+                        file_info = self._get_media_info(file_path)
+                        # Pre-processa il file in base alle regole definite
+                        self.pre_process_file(file_info, file_processing)
+                        # Processa in base al tipo di media
+                        self.process_file(file_info, file_processing)
+                        self.stats['files'].append(file_processing)
+
+                        print_errors(file_processing)
+
+                    except Exception as e:
+                        self.logger.exception(f"Errore nella gestione di {file_path}: {e}")
+                        self.stats['errors'] += 1
 
         # Salva lo stato del processamento
         self.store_info()
@@ -495,7 +509,6 @@ class MediaOrganizer:
         return media_to_skip
 
     def store_info(self):
-        stats_file = os.path.join(root_dir, config_dir, 'processing_stats.json')
         payload = []
         for file_stat in self.stats['files']:
             payload.append({
@@ -505,27 +518,26 @@ class MediaOrganizer:
                 'skipped': file_stat['skipped'],
             })
         self.store_in_db(payload)
-        self.stats['files'] = payload
-        try:
-            with open(stats_file, 'w', encoding='utf-8') as f:
-                json.dump(self.stats['files'], f, ensure_ascii=False, indent=4)
-            self.logger.info(f"Stato del processamento salvato in: {stats_file}")
-        except Exception as e:
-            self.logger.error(f"Errore nel salvare lo stato del processamento: {e}")
 
     def store_in_db(self, files_stats: list):
         for file_stat in files_stats:
             try:
                 self.db.insert_media_entry(file_stat)
+            except OperationalError as e:
+                self.logger.error(f"Errore di connessione al database durante il salvataggio dei dati {file_stat['name']} - Errore: {e}")
             except Exception as e:
-                self.logger.error(f"Errore nell'inserire il file nel database: {file_stat['name']} - Errore: {e}")
+                self.logger.error(f"Errore inatteso durante il salvataggio dei dati nel database {file_stat['name']} - Errore: {e}")
 
     def load_info(self) -> list:
         try:
             return self.db.load_processed_files()
-
+        except OperationalError as e:
+            self.logger.error(f"Errore di connessione al database: {e}")
+            print("Impossibile connettersi al database. Proseguo senza dati pregressi.")
+            return []
         except Exception as e:
             self.logger.error(f"Errore nel caricare lo stato del processamento: {e}")
+            print("Errore inatteso durante il caricamento da database. Proseguo senza dati pregressi.")
             return []
 
     def process_file(self, file_info: dict, file_processing: dict):
@@ -581,15 +593,38 @@ class MediaOrganizer:
     def reload_all_config(self):
         """Ricarica la configurazione da file"""
         self.config = reload_generic_config()
-        self.scan_config = reload_scan_config()
-
+        # TODO - Sostituire e permettere configurazioni multiple
+        selected_dir_to_scan = self.config.get("paths", {}).get("selected_dir", [])
+        for i, scan_info in enumerate(selected_dir_to_scan):
+            try:
+                self.config['paths']['selected_dir'][i]['scan_config'] = load_config(scan_info.get('scan_config_file', 'scan_config_not_defined'))
+            except MissingConfigException as e:
+                self.logger.error(f"Errore nel caricare la configurazione della directory #{i+1}: {e}")
+                print(f"Errore inatteso nel caricare la configurazione della directory #{i+1}.")
+            except Exception as e:
+                self.logger.exception(f"Errore inatteso nel caricare la configurazione della directory #{i+1}: {e}")
+                print(f"Errore inatteso nel caricare la configurazione della directory #{i+1}.")
 
 class MissingConfigException(Exception):
     pass
 
 def reload_generic_config() -> dict:
+    """Ricarica la configurazione generica unendo system_config.toml e config.toml"""
+    systemConfigFile = os.path.join(root_dir, config_dir, sys_config_file_name)
     configFile = os.path.join(root_dir, config_dir, config_file_name)
-    return load_config(configFile)
+    sys_conf = load_config(systemConfigFile)
+    user_conf = load_config(configFile)
+    return join_configs(sys_conf, user_conf)
+
+def join_configs(base: dict, override: dict) -> dict:
+    """Unisce due configurazioni, elemento per elemento, con override che sovrascrive base"""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = join_configs(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 def reload_scan_config() -> dict:
     scanConfigFile = os.path.join(root_dir, config_dir, scan_config_file)
