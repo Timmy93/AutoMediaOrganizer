@@ -27,7 +27,7 @@ tv_show_pattern = "{title} ({year})/Season {season:02d}"
 [regex]
 # Regex used to identify movies and TV shows
 movie_pattern = '''(?P<title>.+?)[\.\s\(\[]+(?P<year>\d{4})'''
-tv_pattern = '''(?P<title>.+?)[\.\s\_\-]+[Ss]?(?P<season>\d{1,2})[EexX](?P<episode>\d{1,2})'''
+tv_pattern = '''(?P<title>.+?)[\.\s\_\-]+[Ss]?(?P<season>\d+)[EexX](?P<episode>\d+)'''
 
 # Reduce logging verbosity for specific packages
 [[Packages]]
