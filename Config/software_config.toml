@@ -22,7 +22,7 @@ subtitle_extensions = [".srt", ".sub", ".ass", ".ssa"]
 [naming]
 # Pattern used for organizing and naming movies and TV shows
 movie_pattern = "{title} ({year})"
-tv_show_pattern = "{title}/Season {season:02d}"
+tv_show_pattern = "{title} ({year})/Season {season:02d}"
 
 [regex]
 # Regex used to identify movies and TV shows
