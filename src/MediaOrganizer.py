@@ -4,35 +4,16 @@ import logging
 import os
 import re
 import shutil
-import tomllib
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
 from pymysql import OperationalError
 from src.Database import Database
 from src.TMDBClient import TMDBClient
+from src.Tools import hash_this_file, reload_generic_config, load_config, MissingConfigException, common_words
 
 # Configurazioni di default
-config_dir = "Config"
-config_file_name = 'config.toml'
-sys_config_file_name = 'software_config.toml'
 allowed_media_types = ['movie', 'tv']
-root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-
-
-def print_errors(file_processing: dict):
-    preprocessing_successful = file_processing['processing_outcome'].get('outcome', False)
-    processing_successful = file_processing['processing_outcome'].get('outcome', False)
-    if not processing_successful:
-        print(f"Analizzato: {file_processing['name'].name}")
-        print(f">>> Preprocessing applicati: {len(file_processing['preprocessing_outcome'])}")
-        out = []
-        for result in file_processing['preprocessing_outcome']:
-            if err := result.get('error'):
-                out.append("❌" + result['pattern'] + f" (Errore: {err})")
-            else:
-                out.append("✅" + result['pattern'])
-        print(f">>> Patterns: {'|'.join(out)}")
-        print(f">>> Esito processamento: {'Successo' if preprocessing_successful else 'Saltato'}")
 
 
 class MediaOrganizer:
@@ -64,26 +45,28 @@ class MediaOrganizer:
             re.IGNORECASE
         )
 
-        self.stats = {
-            'movies_processed': 0,
-            'tv_processed': 0,
-            'skipped': 0,
-            'errors': 0,
-            'files': []
-        }
-
-    def reset_stats(self):
-        self.stats['movies_processed'] = 0
-        self.stats['tv_processed'] = 0
-        self.stats['skipped'] = 0
-        self.stats['errors'] = 0
-        self.stats['files'] = []
+    def setup_db(self):
+        """Crea le tabelle del database se non esistono"""
+        required_tables = ['input_files', 'output_files']
+        try:
+            self.db.create_tables()
+            self.logger.info("Tabelle del database create o già esistenti.")
+        except OperationalError as e:
+            self.logger.error(f"Errore di connessione al database durante la creazione delle tabelle: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Errore inatteso durante la creazione delle tabelle del database: {e}")
+            raise
 
     def _get_media_info(self, file_path: Path) -> dict:
         """Determina se un file è un film o una serie TV in base alla sua posizione"""
         file_info = {
+            'source_folder': self.config['paths']['source_folder'],
+            'destination_folder': self.config['paths']['destination_folder'],
             'original_path': file_path,
             'path': file_path,
+            'size': file_path.stat().st_size,
+            'last_modify': file_path.stat().st_mtime,
             'destination_subfolder': None,
             'processing_patterns': ['generic'],
             'media_type': '',
@@ -180,17 +163,20 @@ class MediaOrganizer:
     def _generate_tv_path(self, tv_info: Dict, episode_info: Dict, season: int, episode: int, file_info: dict) -> Path:
         """Genera il percorso di destinazione per un episodio di serie TV"""
         show_pattern = self.config['naming']['tv_show_pattern']
-
-        # Nome cartella serie
-        show_folder = show_pattern.format(
-            title=tv_info['name'],
-            season=season
-        )
-        if ("/" in show_folder) or ("\\" in show_folder):
+        if ("/" in show_pattern) or ("\\" in show_pattern):
             # Splitta in sottocartelle
-            parts = re.split(r'[\\/]', show_folder)
-            # Join con Path per gestire le sottocartelle
-            show_folder = Path(*[self._sanitize_filename(part) for part in parts])
+            parts = re.split(r'[\\/]', show_pattern)
+            formatted_parts = []
+            for part in parts:
+                formatted_parts.append(part.format(
+                    title=tv_info['name'],
+                    season=season,
+                    year=tv_info.get('first_air_date', '')[:4]
+                ))
+            show_folder = Path(*[self._sanitize_filename(part) for part in formatted_parts])
+        else:
+            show_folder = Path(self._sanitize_filename(show_pattern))
+
         # Rinomina l'episodio se il pattern è definito, altrimenti mantiene il nome originale
         if ep_pattern := self.config['naming'].get('episode_pattern'):
             episode_name = ep_pattern.format(
@@ -217,9 +203,13 @@ class MediaOrganizer:
     def _sanitize_filename(filename: str) -> str:
         """Rimuove caratteri non validi dai nomi di file"""
         # Caratteri non permessi in Windows/Unix
-        invalid_chars = '<>:"/\\|?*'
-        for char in invalid_chars:
-            filename = filename.replace(char, '')
+        replace_patterns = [
+            {'from': '/\\', 'to': '-'},
+            {'from': '<>:"|?*', 'to': ''}
+        ]
+        for pattern in replace_patterns:
+            for invalid_char in pattern['from']:
+                filename = filename.replace(invalid_char, pattern['to'])
         return filename
 
     def _is_video_file(self, file_path: Path) -> bool:
@@ -231,20 +221,17 @@ class MediaOrganizer:
         try:
             # Crea la directory di destinazione se necessario
             destination.parent.mkdir(parents=True, exist_ok=True)
-
-            # Controlla se il file esiste già
             if destination.exists() and self.config['options'].get('skip_existing', True):
-                self.logger.info(f"File già esistente, saltato: {destination}")
-                return {'outcome': True, 'error': 'File già esistente, saltato'}
-
-            # Copia o sposta
-            if self.config['options'].get('copy_instead_of_link', False):
-                shutil.copy2(file_info.get('original_path'), destination)
-                self.logger.info(f"Copiato: {file_info.get('original_path').name} -> {destination}")
-            else:
+                # File già esistente, salta
+                return {'outcome': True, 'error': 'File già esistente, saltato', 'destination_path': str(destination)}
+            elif not self.config['options'].get('copy_instead_of_link', False):
                 os.link(file_info.get('original_path'), destination)
                 self.logger.info(f"Linkato: {file_info.get('original_path').name} -> {destination}")
-            return {'outcome': True, 'error': None}
+            else:
+                # Copia il file
+                shutil.copy2(file_info.get('original_path'), destination)
+                self.logger.info(f"Copiato: {file_info.get('original_path').name} -> {destination}")
+            return {'outcome': True, 'error': None, 'destination_path': str(destination)}
 
         except Exception as e:
             self.logger.exception(f"Errore nello spostamento/copia di {file_info.get('original_path').name}: {e}")
@@ -270,14 +257,12 @@ class MediaOrganizer:
         """Controlla se il file deve essere ignorato"""
         if file_info.get('ignore', False):
             self.logger.info(f"File ignorato in base alla configurazione: {file_info['path'].name}")
-            self.stats['skipped'] += 1
             file_processing['skipped'] = True
             file_processing['processing_outcome'] = {'outcome': True, 'error': 'File ignorato durante pre-processing'}
 
     def process_movie(self, file_info: dict) -> dict:
         """Processa un file film"""
         self.logger.info(f"Processando film: {file_info['path'].name}")
-
         # Estrae informazioni dal nome del file
         self._parse_movie_filename(file_info)
         if not file_info.get('title') or not file_info.get('year'):
@@ -296,6 +281,8 @@ class MediaOrganizer:
             if not movie_info:
                 self.logger.warning(f"Film non trovato su TMDB (guessing): {file_info['path'].name}")
                 return {'outcome': False, 'error': f'Media non disponibile su TMDB [{file_info['path'].name}]'}
+            else:
+                self.logger.info(f"Film trovato su TMDB (guessing): {movie_info['title']} ({movie_info.get('release_date', '')[:4]})")
         # Genera percorso di destinazione
         dest_path = self._generate_movie_path(movie_info, file_info)
         # Sposta/copia il file
@@ -306,7 +293,6 @@ class MediaOrganizer:
         # Rimuove contenuti tra parentesi tonde o quadre
         title = re.sub(r'\[.*?]|\(.*?\)', '', title)
         # Rimuove parole comuni non necessarie
-        common_words = ['HD', '1080p', '720p', 'BluRay', 'WEBRip', 'x264', 'YIFY', 'DVDRip']
         for word in common_words:
             title = re.sub(r'\b' + re.escape(word) + r'\b', '', title, flags=re.IGNORECASE)
         # Pulisce spazi multipli
@@ -336,6 +322,9 @@ class MediaOrganizer:
             parsed_info['season'],
             parsed_info['episode']
         )
+        if not episode_info:
+            self.logger.warning(f"Episodio non trovato su TMDB: {file_path.name}")
+            return {'outcome': False, 'error': f'Episodio non disponibile su TMDB [{file_path.name}]'}
 
         # Genera percorso di destinazione
         dest_path = self._generate_tv_path(
@@ -424,15 +413,20 @@ class MediaOrganizer:
           2. Per ogni file, determina se è un film o una serie TV in base a:
             2.1. Cartella, se definito nelle config
             2.2. Nome del file, (serie tv se identifica pattern SxxExx)
-          3. Pre-processa in base ai patterns applicati
-          4. Processa i file con TMDB
-          5. Esporta il file nel catalogo
+          3. Verifica se il file è già stato processato in precedenza
+          4. Pre-processa in base ai patterns applicati
+          5. Processa i file con TMDB
+          6. Esporta il file nel catalogo
         :return: None
         """
         print("Starting scan and organize process...")
         self.reload_all_config()
-        self.reset_stats()
-        already_processed_files = self.load_info()
+        try:
+            already_processed_files = self.load_info()
+        except Exception as e:
+            self.logger.error(f"Errore nel caricare lo stato del processamento: {e}")
+            print("Errore inatteso durante il caricamento da database. Interrompo l'analisi.")
+            return
         self.logger.info(f"Caricati {len(already_processed_files)} file già processati con successo in precedenza.")
 
 
@@ -465,68 +459,60 @@ class MediaOrganizer:
                         'skipped': False,
                     }
                     try:
-                        if self.skip_this_file(file_path, already_processed_files):
+                        if self.skip_this_file(file_path):
                             continue
                         # Determina il tipo di media
                         file_info = self._get_media_info(file_path)
+                        if self.already_processed(file_info, already_processed_files):
+                            self.logger.debug(f"File già processato in precedenza, saltato: {file_path}")
+                            continue
                         # Pre-processa il file in base alle regole definite
                         self.pre_process_file(file_info, file_processing)
                         # Processa in base al tipo di media
                         self.process_file(file_info, file_processing)
-                        self.stats['files'].append(file_processing)
-
-                        print_errors(file_processing)
-
+                        # Salva il file processato nel database
+                        self.store_in_db(file_info, file_processing)
                     except Exception as e:
                         self.logger.exception(f"Errore nella gestione di {file_path}: {e}")
-                        self.stats['errors'] += 1
 
         # Salva lo stato del processamento
-        self.store_info()
         print("Scan and organize process completed.")
 
-        # Stampa statistiche
-        self.logger.info("=" * 60)
-        self.logger.info("STATISTICHE FINALI")
-        self.logger.info("=" * 60)
-        self.logger.info(f"Film processati: {self.stats['movies_processed']}")
-        self.logger.info(f"Episodi TV processati: {self.stats['tv_processed']}")
-        self.logger.info(f"File saltati: {self.stats['skipped']}")
-        self.logger.info(f"Errori: {self.stats['errors']}")
-        self.logger.info("=" * 60)
-
-    def skip_this_file(self, file_path, already_processed_files: list) -> bool:
-        if str(file_path) in already_processed_files:
-            self.logger.debug(f"File già processato in precedenza, saltato: {file_path}")
-            media_to_skip = True
-        elif not file_path.is_file():
-            media_to_skip = True
+    def skip_this_file(self, file_path: Path) -> bool:
+        if not file_path.is_file():
+            return True
         elif not self._is_video_file(file_path):
             self.logger.debug(f"File non video, saltato: {file_path}")
-            media_to_skip = True
+            return True
         else:
-            media_to_skip = False
-        return media_to_skip
+            return False
 
-    def store_info(self):
-        payload = []
-        for file_stat in self.stats['files']:
-            payload.append({
-                'name': str(file_stat['name']),
-                'preprocessing_outcome': file_stat['preprocessing_outcome'],
-                'processing_outcome': file_stat['processing_outcome'],
-                'skipped': file_stat['skipped'],
-            })
-        self.store_in_db(payload)
+    def already_processed(self, file_info: dict, already_processed_files: list) -> bool:
+        """Verifica se un file è già stato processato in precedenza"""
+        current_rel_path = os.path.join(file_info['path'].parent.relative_to(file_info['source_folder']), file_info['path'].name)
+        current_last_mod = datetime.fromtimestamp(file_info['last_modify'])
+        for already_processed_file in already_processed_files:
+            ap_rel_path = os.path.join(already_processed_file['path'], already_processed_file['file'])
+            if current_rel_path != ap_rel_path:
+                # File in percorso diverso
+                continue
+            if already_processed_file['size'] != file_info['size']:
+                # Dimensione diversa, file modificato
+                continue
+            if already_processed_file['last_mod'] != current_last_mod:
+                # Data ultima modifica diversa, file modificato
+                continue
+            return True
+        self.logger.debug("File non trovato tra quelli già processati.")
+        return False
 
-    def store_in_db(self, files_stats: list):
-        for file_stat in files_stats:
-            try:
-                self.db.insert_media_entry(file_stat)
-            except OperationalError as e:
-                self.logger.error(f"Errore di connessione al database durante il salvataggio dei dati {file_stat['name']} - Errore: {e}")
-            except Exception as e:
-                self.logger.error(f"Errore inatteso durante il salvataggio dei dati nel database {file_stat['name']} - Errore: {e}")
+    def store_in_db(self, file_info: dict, file_processing: dict):
+        try:
+            self.db.insert_analyzed_media(file_info, file_processing)
+        except OperationalError as e:
+            self.logger.error(f"Errore di connessione al database durante il salvataggio dei dati {file_info['path'].name} - Errore: {e}")
+        except Exception as e:
+            self.logger.error(f"Errore inatteso durante il salvataggio dei dati nel database {file_info['path'].name} - Errore: {e}")
 
     def load_info(self) -> list:
         try:
@@ -535,38 +521,25 @@ class MediaOrganizer:
             self.logger.error(f"Errore di connessione al database: {e}")
             print("Impossibile connettersi al database. Proseguo senza dati pregressi.")
             return []
-        except Exception as e:
-            self.logger.error(f"Errore nel caricare lo stato del processamento: {e}")
-            print("Errore inatteso durante il caricamento da database. Proseguo senza dati pregressi.")
-            return []
 
     def process_file(self, file_info: dict, file_processing: dict):
         try:
             if file_info.get('ignore', False):
                 self.logger.info(f"File saltato durante il pre-processamento: {file_info['path'].name}")
-                self.stats['skipped'] += 1
                 return
             elif file_info.get('media_type') == 'movie':
                 result = self.process_movie(file_info)
                 if result['outcome']:
-                    self.stats['movies_processed'] += 1
                     file_processing['processing_outcome'] = result
-                else:
-                    self.stats['skipped'] += 1
             elif file_info.get('media_type') == 'tv':
                 result = self.process_tv_show(file_info)
                 if result['outcome']:
-                    self.stats['tv_processed'] += 1
                     file_processing['processing_outcome'] = result
-                else:
-                    self.stats['skipped'] += 1
             else:
                 self.logger.warning(f"Tipo di media non supportato per il file: {file_info['name']}")
-                self.stats['skipped'] += 1
                 file_processing['processing_outcome'] = {'outcome': False, 'error': 'Tipo di media non supportato'}
         except Exception as e:
             self.logger.exception(f"Errore nel processare [{file_info.get('media_type')}] {file_info['name']}: {e}")
-            self.stats['errors'] += 1
             file_processing['processing_outcome'] = {'outcome': False, 'error': str(e)}
 
     def get_dir_to_scan(self) -> list:
@@ -577,6 +550,9 @@ class MediaOrganizer:
             return [base_path]
         else:
             dirs_to_scan = []
+            if not self.scan_config:
+                self.logger.warning("Nessuna configurazione di scansione definita, nessuna directory da scansionare.")
+                return dirs_to_scan
             for scanned_dir in self.scan_config.get('directories', []):
                 if scanned_dir.get('ignore', False):
                     self.logger.info(f"SKIP - Directory ignorata: {scanned_dir.get('path', '')}")
@@ -593,7 +569,6 @@ class MediaOrganizer:
     def reload_all_config(self):
         """Ricarica la configurazione da file"""
         self.config = reload_generic_config()
-        # TODO - Sostituire e permettere configurazioni multiple
         selected_dir_to_scan = self.config.get("paths", {}).get("selected_dir", [])
         for i, scan_info in enumerate(selected_dir_to_scan):
             try:
@@ -605,46 +580,3 @@ class MediaOrganizer:
                 self.logger.exception(f"Errore inatteso nel caricare la configurazione della directory #{i+1}: {e}")
                 print(f"Errore inatteso nel caricare la configurazione della directory #{i+1}.")
 
-class MissingConfigException(Exception):
-    pass
-
-def reload_generic_config() -> dict:
-    """Ricarica la configurazione generica unendo system_config.toml e config.toml"""
-    systemConfigFile = os.path.join(root_dir, config_dir, sys_config_file_name)
-    configFile = os.path.join(root_dir, config_dir, config_file_name)
-    sys_conf = load_config(systemConfigFile)
-    user_conf = load_config(configFile)
-    return join_configs(sys_conf, user_conf)
-
-def join_configs(base: dict, override: dict) -> dict:
-    """Unisce due configurazioni, elemento per elemento, con override che sovrascrive base"""
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = join_configs(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-def reload_scan_config() -> dict:
-    scanConfigFile = os.path.join(root_dir, config_dir, scan_config_file)
-    return load_config(scanConfigFile)
-
-def load_config(path: str) -> dict:
-    log = logging.getLogger(__name__)
-    if not os.path.exists(path):
-        log.error("load_config - Missing config file: " + str(path))
-        raise MissingConfigException("load_config - Missing config file: " + str(path))
-    try:
-        with open(path, 'rb') as stream:
-            config = tomllib.load(stream)
-    except FileNotFoundError:
-        log.error(f"Cannot find the config file: [{path}]")
-        raise MissingConfigException("File di configurazione mancante")
-    except tomllib.TOMLDecodeError as e:
-        log.error(f"Cannot parse the configuration: [{e}]")
-        raise MissingConfigException(str(e))
-    except PermissionError as e:
-        log.error(f"Insufficient permissions to read configuration: [{path}]")
-        raise MissingConfigException(str(e))
-    return config

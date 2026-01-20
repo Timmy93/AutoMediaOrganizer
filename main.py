@@ -1,7 +1,8 @@
 import logging
 import os
 
-from src.MediaOrganizer import MissingConfigException, MediaOrganizer, config_dir, reload_generic_config, reload_scan_config
+from src.MediaOrganizer import MediaOrganizer
+from src.Tools import reload_generic_config, config_dir, MissingConfigException
 
 
 def initialize_log(config):
@@ -37,6 +38,7 @@ def main():
         logger = initialize_log(config)
         logger.info("Configuration loaded successfully.")
         organizer = MediaOrganizer(config)
+        organizer.setup_db()
     except MissingConfigException as exc:
         print(f"Cannot load config - Error: {exc}")
         logging.error(f"Cannot load config - Error: {exc}")
