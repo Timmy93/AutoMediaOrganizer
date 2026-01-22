@@ -13,4 +13,10 @@ RUN pip3 install -r requirements.txt
 
 COPY . .
 
+RUN groupadd -r amouser && useradd -r -g amouser amouser
+
+RUN chown -R amouser:amouser /app
+
+USER amouser
+
 CMD [ "python3", "main.py"]

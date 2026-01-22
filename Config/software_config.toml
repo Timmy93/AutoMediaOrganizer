@@ -4,6 +4,10 @@
 # To customize settings, please use 'config.toml' instead.
 ##################################
 
+[db]
+# MariaDB - Default configurations
+port = 3306
+
 [log]
 # Logging configuration
 logFile = "AutoMediaOrganizer.log"
