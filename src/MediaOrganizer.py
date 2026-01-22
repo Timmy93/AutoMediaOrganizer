@@ -232,7 +232,9 @@ class MediaOrganizer:
                 shutil.copy2(file_info.get('original_path'), destination)
                 self.logger.info(f"Copiato: {file_info.get('original_path').name} -> {destination}")
             return {'outcome': True, 'error': None, 'destination_path': str(destination)}
-
+        except PermissionError:
+            self.logger.error(f"Permessi insufficienti per spostare/copiare {file_info.get('original_path').name} a {destination}")
+            return {'outcome': False, 'error': 'Permessi insufficienti'}
         except Exception as e:
             self.logger.exception(f"Errore nello spostamento/copia di {file_info.get('original_path').name}: {e}")
             return {'outcome': False, 'error': str(e)}
