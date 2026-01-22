@@ -9,6 +9,9 @@
 logFile = "AutoMediaOrganizer.log"
 logLevel = "INFO"
 
+[scan]
+frequency_minutes = 60  # Frequency of scan in minutes
+
 [options]
 # General options for media organization
 copy_instead_of_link = false

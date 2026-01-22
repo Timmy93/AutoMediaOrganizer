@@ -1,6 +1,8 @@
 import logging
 import os
-
+import time
+from datetime import datetime
+import schedule
 from src.MediaOrganizer import MediaOrganizer
 from src.Tools import reload_generic_config, config_dir, MissingConfigException
 
@@ -49,6 +51,40 @@ def main():
         exit()
 
     organizer.scan_and_organize()
+
+    # Funzione wrapper per il logging
+    def scheduled_scan():
+        try:
+            logger.info(f"Starting scheduled scan at {datetime.now()}")
+            organizer.scan_and_organize()
+            logger.info(f"Scan completed at {datetime.now()}")
+        except Exception as exc:
+            logger.exception(f"Error during scheduled scan: {exc}")
+
+    # Configurazione schedule
+    SCAN_INTERVAL_HOURS = config.get('scan', {}).get('frequency_minutes')  # Modifica questo valore
+
+    # Esegui subito il primo scan
+    logger.info("Running initial scan...")
+    scheduled_scan()
+
+    if SCAN_INTERVAL_HOURS is None:
+        logger.warning("Scan interval not set in configuration. Scheduled scans will not be set up.")
+        print("Scan interval not set in configuration. Scheduled scans will not be set up.")
+        return
+    else:
+        # Programma gli scan successivi
+        schedule.every(SCAN_INTERVAL_HOURS).minutes.do(scheduled_scan)
+        logger.info(f"Scheduled scans every {SCAN_INTERVAL_HOURS} hours")
+
+        # Loop principale
+        try:
+            while True:
+                schedule.run_pending()
+                time.sleep(60)  # Controlla ogni minuto
+        except KeyboardInterrupt:
+            logger.info("Scheduler stopped by user (Ctrl+C)")
+            print("\nScheduler stopped by user")
 
 if __name__ == '__main__':
     main()
