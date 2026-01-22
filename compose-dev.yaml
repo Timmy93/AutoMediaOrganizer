@@ -1,0 +1,21 @@
+networks:
+  network_internal:
+    external: true
+    name: ${NETWORK_INTERNAL}
+services:
+  automediaorganizer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      TZ: ${TZ}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+    volumes:
+      - ${AMO_CONFIG}/config.toml:/app/Config/config.toml
+      - ${AMO_CONFIG}/scan_config.toml:/app/Config/scan_config.toml
+      - ${AMO_CONFIG}/AutoMediaOrganizer.log:/app/Config/AutoMediaOrganizer.log
+      - ${MEDIA_DIR}:/media
+    restart: no
+    networks:
+      - network_internal

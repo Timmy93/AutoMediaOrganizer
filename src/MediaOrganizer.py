@@ -216,24 +216,70 @@ class MediaOrganizer:
         """Verifica se un file è un file video"""
         return file_path.suffix.lower() in self.config['options']['video_extensions']
 
+    # def _link_or_copy_file(self, file_info: dict, destination: Path) -> dict:
+    #     """Sposta o copia un file dalla sorgente alla destinazione"""
+    #     try:
+    #         # Crea la directory di destinazione se necessario
+    #         destination.parent.mkdir(parents=True, exist_ok=True)
+    #         if destination.exists() and self.config['options'].get('skip_existing', True):
+    #             # File già esistente, salta
+    #             return {'outcome': True, 'error': 'File già esistente, saltato', 'destination_path': str(destination)}
+    #         elif not self.config['options'].get('copy_instead_of_link', False):
+    #             os.link(file_info.get('original_path'), destination)
+    #             self.logger.info(f"Linkato: {file_info.get('original_path').name} -> {destination}")
+    #         else:
+    #             # Copia il file
+    #             shutil.copy2(file_info.get('original_path'), destination)
+    #             self.logger.info(f"Copiato: {file_info.get('original_path').name} -> {destination}")
+    #         return {'outcome': True, 'error': None, 'destination_path': str(destination)}
+    #     except PermissionError as e:
+    #         self.logger.error(f"Permessi insufficienti per spostare/copiare {file_info.get('original_path').name} a {destination}")
+    #         self.logger.exception(e)
+    #         return {'outcome': False, 'error': 'Permessi insufficienti'}
+    #     except Exception as e:
+    #         self.logger.exception(f"Errore nello spostamento/copia di {file_info.get('original_path').name}: {e}")
+    #         return {'outcome': False, 'error': str(e)}
+
     def _link_or_copy_file(self, file_info: dict, destination: Path) -> dict:
         """Sposta o copia un file dalla sorgente alla destinazione"""
         try:
+            # DEBUG: Stampa informazioni sui permessi
+            import pwd, grp
+            uid, gid = os.getuid(), os.getgid()
+            self.logger.info(f"Running as UID:{uid} GID:{gid}")
+            self.logger.info(f"Destination: {destination}")
+            self.logger.info(f"Destination parent: {destination.parent}")
+
+            # Verifica se la directory parent esiste
+            if destination.parent.exists():
+                stat_info = destination.parent.stat()
+                self.logger.info(f"Parent exists - Owner: {stat_info.st_uid}:{stat_info.st_gid}, Mode: {oct(stat_info.st_mode)}")
+            else:
+                self.logger.info(f"Parent does not exist, will create")
+                # Verifica il primo parent che esiste
+                check_path = destination.parent
+                while not check_path.exists() and check_path != check_path.parent:
+                    check_path = check_path.parent
+                stat_info = check_path.stat()
+                self.logger.info(f"First existing parent: {check_path}")
+                self.logger.info(f"Owner: {stat_info.st_uid}:{stat_info.st_gid}, Mode: {oct(stat_info.st_mode)}")
+
             # Crea la directory di destinazione se necessario
             destination.parent.mkdir(parents=True, exist_ok=True)
+            self.logger.info(f"Cartella parent creata: {destination.parent}")
+
             if destination.exists() and self.config['options'].get('skip_existing', True):
-                # File già esistente, salta
                 return {'outcome': True, 'error': 'File già esistente, saltato', 'destination_path': str(destination)}
             elif not self.config['options'].get('copy_instead_of_link', False):
                 os.link(file_info.get('original_path'), destination)
                 self.logger.info(f"Linkato: {file_info.get('original_path').name} -> {destination}")
             else:
-                # Copia il file
                 shutil.copy2(file_info.get('original_path'), destination)
                 self.logger.info(f"Copiato: {file_info.get('original_path').name} -> {destination}")
             return {'outcome': True, 'error': None, 'destination_path': str(destination)}
-        except PermissionError:
+        except PermissionError as e:
             self.logger.error(f"Permessi insufficienti per spostare/copiare {file_info.get('original_path').name} a {destination}")
+            self.logger.exception(e)
             return {'outcome': False, 'error': 'Permessi insufficienti'}
         except Exception as e:
             self.logger.exception(f"Errore nello spostamento/copia di {file_info.get('original_path').name}: {e}")

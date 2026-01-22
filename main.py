@@ -1,5 +1,7 @@
+import grp
 import logging
 import os
+import pwd
 import time
 from datetime import datetime
 import schedule
@@ -39,6 +41,14 @@ def main():
         config = reload_generic_config()
         logger = initialize_log(config)
         logger.info("Configuration loaded successfully.")
+
+        uid, gid = os.getuid(), os.getgid()
+        user = pwd.getpwuid(uid).pw_name
+        group = grp.getgrgid(gid).gr_name
+
+        print(f"Running as {user}:{group} ({uid}:{gid})")
+        logger.info(f"Running as {user}:{group} ({uid}:{gid})")
+
         organizer = MediaOrganizer(config)
         organizer.setup_db()
     except MissingConfigException as exc:
