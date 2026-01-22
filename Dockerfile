@@ -13,10 +13,9 @@ RUN pip3 install -r requirements.txt
 
 COPY . .
 
-RUN groupadd -r amouser && useradd -r -g amouser amouser
+# Copia lo script entrypoint
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-RUN chown -R amouser:amouser /app
-
-USER amouser
-
+ENTRYPOINT ["/entrypoint.sh"]
 CMD [ "python3", "main.py"]
