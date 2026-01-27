@@ -452,11 +452,11 @@ class MediaOrganizer:
                 continue
             if already_processed_file['size'] != file_info['size']:
                 # Dimensione diversa, file modificato
-                self.logger.debug(f"File modificato (dimensione diversa): {already_processed_file['file']}")
+                self.logger.debug(f"File modificato (dimensione diversa): {already_processed_file['file']}: {already_processed_file['size']} != {file_info['size']}")
                 continue
             if already_processed_file['last_mod'] != current_last_mod:
                 # Data ultima modifica diversa, file modificato
-                self.logger.debug(f"File modificato (data ultima modifica diversa): {already_processed_file['file']}")
+                self.logger.debug(f"File modificato (data ultima modifica diversa): {already_processed_file['file']}: {already_processed_file['last_mod']} != {current_last_mod}")
                 continue
             return True
         self.logger.debug("File non trovato tra quelli già processati.")
