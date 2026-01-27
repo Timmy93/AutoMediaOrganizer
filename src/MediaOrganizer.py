@@ -417,6 +417,8 @@ class MediaOrganizer:
                         if self.already_processed(file_info, already_processed_files):
                             self.logger.debug(f"File già processato in precedenza, saltato: {file_path}")
                             continue
+                        else:
+                            self.logger.debug(f"Nuovo file da processare: {file_path}")
                         # Pre-processa il file in base alle regole definite
                         pp = Preparser(self.config, self.scan_config, file_info, file_processing)
                         pp.preparse()
@@ -450,9 +452,11 @@ class MediaOrganizer:
                 continue
             if already_processed_file['size'] != file_info['size']:
                 # Dimensione diversa, file modificato
+                self.logger.debug(f"File modificato (dimensione diversa): {already_processed_file['file']}")
                 continue
             if already_processed_file['last_mod'] != current_last_mod:
                 # Data ultima modifica diversa, file modificato
+                self.logger.debug(f"File modificato (data ultima modifica diversa): {already_processed_file['file']}")
                 continue
             return True
         self.logger.debug("File non trovato tra quelli già processati.")
