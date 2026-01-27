@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, Dict
 from pymysql import OperationalError
 from src.Database import Database
+from src.Preparser import Preparser
 from src.TMDBClient import TMDBClient
 from src.Tools import hash_this_file, reload_generic_config, load_config, MissingConfigException, common_words
 
@@ -243,30 +244,23 @@ class MediaOrganizer:
     def _link_or_copy_file(self, file_info: dict, destination: Path) -> dict:
         """Sposta o copia un file dalla sorgente alla destinazione"""
         try:
-            # DEBUG: Stampa informazioni sui permessi
-            import pwd, grp
-            uid, gid = os.getuid(), os.getgid()
-            self.logger.info(f"Running as UID:{uid} GID:{gid}")
-            self.logger.info(f"Destination: {destination}")
-            self.logger.info(f"Destination parent: {destination.parent}")
-
             # Verifica se la directory parent esiste
             if destination.parent.exists():
                 stat_info = destination.parent.stat()
-                self.logger.info(f"Parent exists - Owner: {stat_info.st_uid}:{stat_info.st_gid}, Mode: {oct(stat_info.st_mode)}")
+                self.logger.debug(f"Parent exists - Owner: {stat_info.st_uid}:{stat_info.st_gid}, Mode: {oct(stat_info.st_mode)}")
             else:
-                self.logger.info(f"Parent does not exist, will create")
+                self.logger.debug(f"Creazione cartella parent necessaria: {destination.parent}")
                 # Verifica il primo parent che esiste
                 check_path = destination.parent
                 while not check_path.exists() and check_path != check_path.parent:
                     check_path = check_path.parent
                 stat_info = check_path.stat()
-                self.logger.info(f"First existing parent: {check_path}")
-                self.logger.info(f"Owner: {stat_info.st_uid}:{stat_info.st_gid}, Mode: {oct(stat_info.st_mode)}")
+                self.logger.debug(f"First existing parent: {check_path}")
+                self.logger.debug(f"Owner: {stat_info.st_uid}:{stat_info.st_gid}, Mode: {oct(stat_info.st_mode)}")
 
             # Crea la directory di destinazione se necessario
             destination.parent.mkdir(parents=True, exist_ok=True)
-            self.logger.info(f"Cartella parent creata: {destination.parent}")
+            self.logger.debug(f"Cartella parent creata: {destination.parent}")
 
             if destination.exists() and self.config['options'].get('skip_existing', True):
                 return {'outcome': True, 'error': 'File già esistente, saltato', 'destination_path': str(destination)}
@@ -285,28 +279,6 @@ class MediaOrganizer:
             self.logger.exception(f"Errore nello spostamento/copia di {file_info.get('original_path').name}: {e}")
             return {'outcome': False, 'error': str(e)}
 
-    def pre_process_file(self, file_info: dict, file_processing: dict) -> dict:
-        """Applica le regole di pre-processamento al file"""
-        for pattern_name in file_info.get('processing_patterns', []):
-            pattern_rules = self.scan_config.get('patterns', {}).get(pattern_name, {})
-            self.check_skip(file_info, file_processing)
-            for pattern in pattern_rules:
-                pattern_result = self.apply_pattern_rule(file_info, pattern)
-                # Salva solo i pattern applicati o con errori
-                if pattern_result.get('applied', False) or pattern_result.get('error'):
-                    file_processing['preprocessing_outcome'].append(pattern_result)
-                # Se il file è stato marcato come ignorato, esce dal ciclo
-                self.check_skip(file_info, file_processing)
-                if file_info.get('ignore', False):
-                    break
-        return file_info
-
-    def check_skip(self, file_info: dict, file_processing: dict):
-        """Controlla se il file deve essere ignorato"""
-        if file_info.get('ignore', False):
-            self.logger.info(f"File ignorato in base alla configurazione: {file_info['path'].name}")
-            file_processing['skipped'] = True
-            file_processing['processing_outcome'] = {'outcome': True, 'error': 'File ignorato durante pre-processing'}
 
     def process_movie(self, file_info: dict) -> dict:
         """Processa un file film"""
@@ -385,75 +357,6 @@ class MediaOrganizer:
         # Sposta/copia il file
         return self._link_or_copy_file(file_info, dest_path)
 
-    def apply_pattern_rule(self, file_info: dict, pattern: dict) -> dict:
-        result = {
-            'pattern': pattern.get('name') or pattern.get('regex') or 'unnamed',
-            'id': hashlib.sha256(json.dumps(pattern, sort_keys=True).encode('utf-8')).hexdigest(),
-            'applied': False,
-            'error': None
-        }
-        try:
-            if pattern.get('regex') and pattern.get('ignore'):
-                if re.search(pattern.get('regex'), file_info['path'].stem):
-                    file_info['ignore'] = True
-                    result['applied'] = True
-            if pattern.get('regex') and pattern.get('substitution'):
-                result['applied'] = self.regex_rename(file_info, pattern)
-            if pattern.get('regex') and pattern.get('year'):
-                if re.search(pattern.get('regex'), file_info['path'].stem):
-                    # Aggiunge o modifica l'anno nel file_info
-                    file_info['year'] = pattern.get('year')
-                    result['applied'] = True
-        except re.error as e:
-            self.logger.error(f"Errore nell'applicare la regola di rinomina: {e}")
-            result['error'] = str(e)
-        except Exception as e:
-            self.logger.exception(f"Errore inatteso nell'applicare la regola di rinomina: {e}")
-            result['error'] = str(e)
-        return result
-
-    def regex_rename(self, file_info: dict, rename_rule) -> bool:
-        def repl(m):
-            d = m.groupdict() | folder_info
-            if episode_padding := rename_rule.get("episode_padding") is None:
-                episode_padding = self.config.get('options', {}).get('episode_padding', 0)
-            if season_padding := rename_rule.get("season_padding") is None:
-                season_padding = self.config.get('options', {}).get('season_padding', 0)
-            # Normalizzazione valori
-            if d.get("episode"):
-                if ep_offset := rename_rule.get("episode_offset", 0):
-                    d["episode"] = int(d["episode"]) + ep_offset
-                    d["episode"] = str(d["episode"]).zfill(episode_padding)
-            if (season_number := rename_rule.get("season_number")) is not None:
-                d["season"] = season_number
-            if d.get("season"):
-                if season_offset := rename_rule.get("season_offset", 0):
-                    d["season"] = int(d["season"]) + season_offset
-                d["season"] = str(d["season"]).zfill(season_padding)
-            return rename_rule.get('substitution').format(**d)
-        match = re.search(rename_rule.get('regex'), file_info['path'].stem)
-        if not match:
-            self.logger.debug("Nessuna corrispondenza trovata per la regola di rinomina.")
-            return False
-        else:
-            folder_info = {}
-            if "folder_regex" in rename_rule:
-                # Estrae informazioni dalla cartella padre
-                folder_match = re.match(rename_rule.get('folder_regex'), os.path.basename(os.path.dirname(file_info['path'])))
-                if folder_match:
-                    folder_info = folder_match.groupdict()
-            self.logger.debug(f"Applicando regola di rinomina: {rename_rule.get('regex')} -> {rename_rule.get('substitution')}")
-            try:
-                rename_rule = re.sub(rename_rule.get('regex'), repl, file_info['path'].stem)
-            except re.error as e:
-                self.logger.error(f"Errore nella sostituzione della regola di rinomina: {e}")
-                return False
-            except KeyError as e:
-                self.logger.error(f"Valori mancanti per la rinomina [{', '.join(e.args)}]")
-                return False
-            file_info['path'] = Path(str(os.path.join(file_info['path'].parent, rename_rule + file_info['path'].suffix)))
-            return True
-
     def scan_and_organize(self)-> None:
         """
         Scansiona la cartella sorgente e organizza tutti i file
@@ -515,7 +418,8 @@ class MediaOrganizer:
                             self.logger.debug(f"File già processato in precedenza, saltato: {file_path}")
                             continue
                         # Pre-processa il file in base alle regole definite
-                        self.pre_process_file(file_info, file_processing)
+                        pp = Preparser(self.config, self.scan_config, file_info, file_processing)
+                        pp.preparse()
                         # Processa in base al tipo di media
                         self.process_file(file_info, file_processing)
                         # Salva il file processato nel database
