@@ -122,9 +122,10 @@ class Preparser:
                     d["season"] = int(d["season"]) + season_offset
                 d["season"] = str(d["season"]).zfill(season_padding)
             return rename_rule.get('substitution').format(**d)
+        rule_name = rename_rule.get('name') or rename_rule.get('regex')
         match = re.search(rename_rule.get('regex'), self.file_info['path'].stem)
         if not match:
-            self.logger.debug("Nessuna corrispondenza trovata per la regola di rinomina.")
+            self.logger.debug(f"Nessuna corrispondenza trovata per la regola di rinomina [{rule_name}]")
             return False
         else:
             folder_info = {}
@@ -133,9 +134,10 @@ class Preparser:
                 folder_match = re.match(rename_rule.get('folder_regex'), os.path.basename(os.path.dirname(self.file_info['path'])))
                 if folder_match:
                     folder_info = folder_match.groupdict()
-            self.logger.debug(f"Applicando regola di rinomina: {rename_rule.get('regex')} -> {rename_rule.get('substitution')}")
+            self.logger.debug(f"Applicando regola di rinomina: {rule_name} -> {rename_rule.get('substitution')}")
             try:
                 rename_rule = re.sub(rename_rule.get('regex'), repl, self.file_info['path'].stem)
+                self.logger.debug(f"Risultato della rinomina: {rename_rule}")
             except re.error as e:
                 self.logger.error(f"Errore nella sostituzione della regola di rinomina: {e}")
                 return False
