@@ -217,30 +217,6 @@ class MediaOrganizer:
         """Verifica se un file è un file video"""
         return file_path.suffix.lower() in self.config['options']['video_extensions']
 
-    # def _link_or_copy_file(self, file_info: dict, destination: Path) -> dict:
-    #     """Sposta o copia un file dalla sorgente alla destinazione"""
-    #     try:
-    #         # Crea la directory di destinazione se necessario
-    #         destination.parent.mkdir(parents=True, exist_ok=True)
-    #         if destination.exists() and self.config['options'].get('skip_existing', True):
-    #             # File già esistente, salta
-    #             return {'outcome': True, 'error': 'File già esistente, saltato', 'destination_path': str(destination)}
-    #         elif not self.config['options'].get('copy_instead_of_link', False):
-    #             os.link(file_info.get('original_path'), destination)
-    #             self.logger.info(f"Linkato: {file_info.get('original_path').name} -> {destination}")
-    #         else:
-    #             # Copia il file
-    #             shutil.copy2(file_info.get('original_path'), destination)
-    #             self.logger.info(f"Copiato: {file_info.get('original_path').name} -> {destination}")
-    #         return {'outcome': True, 'error': None, 'destination_path': str(destination)}
-    #     except PermissionError as e:
-    #         self.logger.error(f"Permessi insufficienti per spostare/copiare {file_info.get('original_path').name} a {destination}")
-    #         self.logger.exception(e)
-    #         return {'outcome': False, 'error': 'Permessi insufficienti'}
-    #     except Exception as e:
-    #         self.logger.exception(f"Errore nello spostamento/copia di {file_info.get('original_path').name}: {e}")
-    #         return {'outcome': False, 'error': str(e)}
-
     def _link_or_copy_file(self, file_info: dict, destination: Path) -> dict:
         """Sposta o copia un file dalla sorgente alla destinazione"""
         try:
@@ -278,7 +254,6 @@ class MediaOrganizer:
         except Exception as e:
             self.logger.exception(f"Errore nello spostamento/copia di {file_info.get('original_path').name}: {e}")
             return {'outcome': False, 'error': str(e)}
-
 
     def process_movie(self, file_info: dict) -> dict:
         """Processa un file film"""
@@ -380,7 +355,6 @@ class MediaOrganizer:
             return
         self.logger.info(f"Caricati {len(already_processed_files)} file già processati con successo in precedenza.")
 
-
         # Itera ricorsivamente attraverso tutti i file
         for main_dir in self.config['paths']['selected_dir']:
             self.config['paths']['source_folder'] = main_dir.get('source_folder')
@@ -445,6 +419,8 @@ class MediaOrganizer:
         """Verifica se un file è già stato processato in precedenza"""
         current_rel_path = os.path.join(file_info['path'].parent.relative_to(file_info['source_folder']), file_info['path'].name)
         current_last_mod = datetime.fromtimestamp(file_info['last_modify'])
+        ## Ignore millisecondi per il confronto
+        current_last_mod = current_last_mod.replace(microsecond=0)
         for already_processed_file in already_processed_files:
             ap_rel_path = os.path.join(already_processed_file['path'], already_processed_file['file'])
             if current_rel_path != ap_rel_path:
