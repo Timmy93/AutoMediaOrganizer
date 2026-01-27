@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import os
+import re
 import tomllib
 from pathlib import Path
 
@@ -20,7 +21,6 @@ def hash_this_file(path: Path) -> str:
             sha256.update(chunk)
     return sha256.hexdigest()
 
-
 def get_relative_path(entry) -> str:
     root_dir = Path(entry.get("source_folder", ""))  # cartella radice
     original_path = Path(entry["original_path"])  # path assoluto del file
@@ -32,7 +32,6 @@ def get_relative_path(entry) -> str:
         relative_path = str(original_path.parent)
     return relative_path
 
-
 def reload_generic_config() -> dict:
     """Ricarica la configurazione generica unendo system_config.toml e config.toml"""
     systemConfigFile = os.path.join(root_dir, config_dir, sys_config_file_name)
@@ -40,7 +39,6 @@ def reload_generic_config() -> dict:
     sys_conf = load_config(systemConfigFile)
     user_conf = load_config(configFile)
     return join_configs(sys_conf, user_conf)
-
 
 def join_configs(base: dict, override: dict) -> dict:
     """Unisce due configurazioni, elemento per elemento, con override che sovrascrive base"""
@@ -51,7 +49,6 @@ def join_configs(base: dict, override: dict) -> dict:
         else:
             result[key] = value
     return result
-
 
 def load_config(path: str) -> dict:
     log = logging.getLogger(__name__)
@@ -72,6 +69,34 @@ def load_config(path: str) -> dict:
         raise MissingConfigException(str(e))
     return config
 
+def guess_correct_title(title: str) -> str:
+    """Prova a indovinare il titolo corretto rimuovendo blocchi di testo non necessari"""
+    # Rimuove contenuti tra parentesi tonde o quadre
+    title = re.sub(r'\[.*?]|\(.*?\)', '', title)
+    # Rimuove parole comuni non necessarie
+    for word in common_words:
+        title = re.sub(r'\b' + re.escape(word) + r'\b', '', title, flags=re.IGNORECASE)
+    # Pulisce spazi multipli
+    title = ' '.join(title.split())
+    return title.strip()
 
+def _clean_title(title: str) -> str:
+    """Pulisce il titolo sostituendo punti e underscore con spazi"""
+    title = title.replace('.', ' ').replace('_', ' ')
+    # Rimuove spazi multipli
+    title = ' '.join(title.split())
+    return title.strip()
+
+def _sanitize_filename(filename: str) -> str:
+    """Rimuove caratteri non validi dai nomi di file"""
+    # Caratteri non permessi in Windows/Unix
+    replace_patterns = [
+        {'from': '/\\', 'to': '-'},
+        {'from': '<>:"|?*', 'to': ''}
+    ]
+    for pattern in replace_patterns:
+        for invalid_char in pattern['from']:
+            filename = filename.replace(invalid_char, pattern['to'])
+    return filename
 class MissingConfigException(Exception):
     pass

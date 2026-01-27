@@ -1,5 +1,3 @@
-import hashlib
-import json
 import logging
 import os
 import re
@@ -11,7 +9,8 @@ from pymysql import OperationalError
 from src.Database import Database
 from src.Preparser import Preparser
 from src.TMDBClient import TMDBClient
-from src.Tools import hash_this_file, reload_generic_config, load_config, MissingConfigException, common_words
+from src.Tools import reload_generic_config, load_config, MissingConfigException, guess_correct_title, _clean_title, \
+    _sanitize_filename
 
 # Configurazioni di default
 allowed_media_types = ['movie', 'tv']
@@ -110,20 +109,12 @@ class MediaOrganizer:
                 return
         return
 
-    @staticmethod
-    def _clean_title(title: str) -> str:
-        """Pulisce il titolo sostituendo punti e underscore con spazi"""
-        title = title.replace('.', ' ').replace('_', ' ')
-        # Rimuove spazi multipli
-        title = ' '.join(title.split())
-        return title.strip()
-
     def _parse_movie_filename(self, file_info: dict):
         """Estrae informazioni da un nome di file film"""
         match = self.movie_regex.search(file_info['path'].stem)
         if match:
             info = match.groupdict()
-            file_info['title'] = self._clean_title(info['title'])
+            file_info['title'] = _clean_title(info['title'])
             file_info['year'] = int(info['year'])
             # Gestione di film senza anno
             if 'year' not in info or not info['year']:
@@ -141,7 +132,7 @@ class MediaOrganizer:
             year=movie_info.get('release_date', '')[:4]
         )
         # Sanitizza il nome
-        folder_name = self._sanitize_filename(folder_name)
+        folder_name = _sanitize_filename(folder_name)
         dest_folder = os.path.join(
             Path(self.config['paths']['destination_folder']),
             file_info.get('destination_subfolder'),
@@ -155,7 +146,7 @@ class MediaOrganizer:
         match = self.tv_regex.search(filename)
         if match:
             info = match.groupdict()
-            info['title'] = self._clean_title(info['title'])
+            info['title'] = _clean_title(info['title'])
             info['season'] = int(info['season'])
             info['episode'] = int(info['episode'])
             return info
@@ -174,9 +165,9 @@ class MediaOrganizer:
                     season=season,
                     year=tv_info.get('first_air_date', '')[:4]
                 ))
-            show_folder = Path(*[self._sanitize_filename(part) for part in formatted_parts])
+            show_folder = Path(*[_sanitize_filename(part) for part in formatted_parts])
         else:
-            show_folder = Path(self._sanitize_filename(show_pattern))
+            show_folder = Path(_sanitize_filename(show_pattern))
 
         # Rinomina l'episodio se il pattern è definito, altrimenti mantiene il nome originale
         if ep_pattern := self.config['naming'].get('episode_pattern'):
@@ -186,7 +177,7 @@ class MediaOrganizer:
                 episode=episode,
                 episode_title=episode_info.get('name', 'Episode') if episode_info else 'Episode'
             )
-            episode_name = self._sanitize_filename(episode_name)
+            episode_name = _sanitize_filename(episode_name)
             episode_name += file_info["original_path"].suffix
         else:
             episode_name = file_info['path'].name
@@ -199,19 +190,6 @@ class MediaOrganizer:
             show_folder
         )
         return Path(os.path.join(dest_folder, episode_name))
-
-    @staticmethod
-    def _sanitize_filename(filename: str) -> str:
-        """Rimuove caratteri non validi dai nomi di file"""
-        # Caratteri non permessi in Windows/Unix
-        replace_patterns = [
-            {'from': '/\\', 'to': '-'},
-            {'from': '<>:"|?*', 'to': ''}
-        ]
-        for pattern in replace_patterns:
-            for invalid_char in pattern['from']:
-                filename = filename.replace(invalid_char, pattern['to'])
-        return filename
 
     def _is_video_file(self, file_path: Path) -> bool:
         """Verifica se un file è un file video"""
@@ -257,11 +235,11 @@ class MediaOrganizer:
 
     def process_movie(self, file_info: dict) -> dict:
         """Processa un file film"""
-        self.logger.info(f"Processando film: {file_info['path'].name}")
+        self.logger.info(f"Processing - Movie: {file_info['path'].name}")
         # Estrae informazioni dal nome del file
         self._parse_movie_filename(file_info)
         if not file_info.get('title') or not file_info.get('year'):
-            self.logger.warning(f"Film - Impossibile estrarre informazioni da: {file_info['path'].name}")
+            self.logger.warning(f"Processing - Cannot extract required info from name: {file_info['path'].name}")
             return {'outcome': False, 'error': 'Parsing fallito'}
         # Cerca su TMDB
         movie_info = self.tmdb_client.search_movie(
@@ -269,46 +247,37 @@ class MediaOrganizer:
             file_info.get('year')
         )
         if not movie_info:
-            self.logger.info(f"Film non trovato su TMDB: {file_info['path'].name}")
+            self.logger.info(f"Processing - Movie not found on TMDB: {file_info['path'].name}")
             movie_info = self.tmdb_client.search_movie(
-                self.guess_correct_title(file_info['original_path'].stem)
+                guess_correct_title(file_info['original_path'].stem)
             )
             if not movie_info:
-                self.logger.warning(f"Film non trovato su TMDB (guessing): {file_info['path'].name}")
+                self.logger.warning(f"Processing - Movie (guessing) not found on TMDB: {file_info['path'].name}")
                 return {'outcome': False, 'error': f'Media non disponibile su TMDB [{file_info['path'].name}]'}
             else:
-                self.logger.info(f"Film trovato su TMDB (guessing): {movie_info['title']} ({movie_info.get('release_date', '')[:4]})")
+                self.logger.info(f"Movie found on TMDB (guessing): {movie_info['title']} ({movie_info.get('release_date', '')[:4]})")
+        else:
+            self.logger.info(f"Movie found on TMDB: {movie_info['title']} ({movie_info.get('release_date', '')[:4]})")
         # Genera percorso di destinazione
         dest_path = self._generate_movie_path(movie_info, file_info)
         # Sposta/copia il file
         return self._link_or_copy_file(file_info, dest_path)
 
-    def guess_correct_title(self, title: str) -> str:
-        """Prova a indovinare il titolo corretto rimuovendo blocchi di testo non necessari"""
-        # Rimuove contenuti tra parentesi tonde o quadre
-        title = re.sub(r'\[.*?]|\(.*?\)', '', title)
-        # Rimuove parole comuni non necessarie
-        for word in common_words:
-            title = re.sub(r'\b' + re.escape(word) + r'\b', '', title, flags=re.IGNORECASE)
-        # Pulisce spazi multipli
-        title = ' '.join(title.split())
-        return title.strip()
-
     def process_tv_show(self, file_info: dict) -> dict:
         """Processa un file serie TV"""
         file_path = file_info['path']
-        self.logger.info(f"Processando serie TV: {file_path.name}")
+        self.logger.info(f"Processing - TV Show: {file_path.name}")
 
         # Estrae informazioni dal nome del file
         parsed_info = self._parse_tv_filename(file_path.stem)
         if not parsed_info:
-            self.logger.warning(f"Serie TV - Impossibile estrarre informazioni da: {file_path.name}")
+            self.logger.warning(f"Processing - Cannot extract required info from name: {file_path.name}")
             return {'outcome': False, 'error': 'Parsing fallito'}
 
         # Cerca la serie su TMDB
         tv_info = self.tmdb_client.search_tv_show(parsed_info['title'], file_info)
         if not tv_info:
-            self.logger.warning(f"Serie TV non trovata su TMDB: {file_path.name}")
+            self.logger.warning(f"Processing - TV Show not found on TMDB: {file_path.name}")
             return {'outcome': False, 'error': f'Media non disponibile su TMDB [{parsed_info['title']}]'}
 
         # Ottiene dettagli dell'episodio
@@ -318,7 +287,7 @@ class MediaOrganizer:
             parsed_info['episode']
         )
         if not episode_info:
-            self.logger.warning(f"Episodio non trovato su TMDB: {file_path.name}")
+            self.logger.warning(f"Processing - TV Show episode not found on TMDB: {file_path.name}")
             return {'outcome': False, 'error': f'Episodio non disponibile su TMDB [{file_path.name}]'}
 
         # Genera percorso di destinazione
@@ -511,4 +480,3 @@ class MediaOrganizer:
             except Exception as e:
                 self.logger.exception(f"Errore inatteso nel caricare la configurazione della directory #{i+1}: {e}")
                 print(f"Errore inatteso nel caricare la configurazione della directory #{i+1}.")
-
