@@ -224,6 +224,7 @@ class MediaOrganizer:
                     self.logger.info(f"Linkato: {file_info.get('original_path').name} -> {destination}")
                 except OSError as e:
                     self.logger.warning(f"Link fallito per {file_info.get('original_path').name} a {destination}, errore: {e}. Possibile cross-device link o file system che non supporta i link.")
+                    raise e
             else:
                 shutil.copy2(file_info.get('original_path'), destination)
                 self.logger.info(f"Copiato: {file_info.get('original_path').name} -> {destination}")
