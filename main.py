@@ -72,20 +72,20 @@ def main():
             logger.exception(f"Error during scheduled scan: {exc}")
 
     # Configurazione schedule
-    SCAN_INTERVAL_HOURS = config.get('scan', {}).get('frequency_minutes')  # Modifica questo valore
+    SCAN_INTERVAL_MIN = config.get('scan', {}).get('frequency_minutes')  # Modifica questo valore
 
     # Esegui subito il primo scan
     logger.info("Running initial scan...")
     scheduled_scan()
 
-    if SCAN_INTERVAL_HOURS is None:
+    if SCAN_INTERVAL_MIN is None:
         logger.warning("Scan interval not set in configuration. Scheduled scans will not be set up.")
         print("Scan interval not set in configuration. Scheduled scans will not be set up.")
         return
     else:
         # Programma gli scan successivi
-        schedule.every(SCAN_INTERVAL_HOURS).minutes.do(scheduled_scan)
-        logger.info(f"Scheduled scans every {SCAN_INTERVAL_HOURS} hours")
+        schedule.every(SCAN_INTERVAL_MIN).minutes.do(scheduled_scan)
+        logger.info(f"Scheduled scans every {SCAN_INTERVAL_MIN} minutes")
 
         # Loop principale
         try:
