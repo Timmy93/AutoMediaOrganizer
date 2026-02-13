@@ -219,8 +219,11 @@ class MediaOrganizer:
             if destination.exists() and self.config['options'].get('skip_existing', True):
                 return {'outcome': True, 'error': 'File già esistente, saltato', 'destination_path': str(destination)}
             elif not self.config['options'].get('copy_instead_of_link', False):
-                os.link(file_info.get('original_path'), destination)
-                self.logger.info(f"Linkato: {file_info.get('original_path').name} -> {destination}")
+                try:
+                    os.link(file_info.get('original_path'), destination)
+                    self.logger.info(f"Linkato: {file_info.get('original_path').name} -> {destination}")
+                except OSError as e:
+                    self.logger.warning(f"Link fallito per {file_info.get('original_path').name} a {destination}, errore: {e}. Possibile cross-device link o file system che non supporta i link.")
             else:
                 shutil.copy2(file_info.get('original_path'), destination)
                 self.logger.info(f"Copiato: {file_info.get('original_path').name} -> {destination}")
