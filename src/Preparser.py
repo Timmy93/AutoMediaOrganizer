@@ -144,5 +144,9 @@ class Preparser:
             except KeyError as e:
                 self.logger.error(f"Valori mancanti per la rinomina [{', '.join(e.args)}]")
                 return False
+            except ValueError as e:
+                self.logger.error(f"Valori inattesi durante la rinomina [{e}")
+                self.logger.exception(e)
+                return False
             self.file_info['path'] = Path(str(os.path.join(self.file_info['path'].parent, rename_rule + self.file_info['path'].suffix)))
             return True
