@@ -1,6 +1,6 @@
 # Required for TMDB API interactions
-requests==2.32.5
+requests==2.34.2
 # Required for MariaDB database connectivity
-PyMySQL
+PyMySQL==1.2.3
 # Schedule tasks
-schedule
+schedule==1.2.2
