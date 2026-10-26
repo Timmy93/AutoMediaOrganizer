@@ -51,17 +51,18 @@ class Preparser:
         try:
             if not self.in_episode_range(pattern):
                 return result
-            if pattern.get('regex') and pattern.get('ignore'):
-                if re.search(pattern.get('regex'), self.file_info['path'].stem):
-                    self.file_info['ignore'] = True
-                    result['applied'] = True
-            if pattern.get('regex') and pattern.get('substitution'):
-                result['applied'] = self.regex_rename(pattern)
-            if pattern.get('regex') and pattern.get('year'):
-                if re.search(pattern.get('regex'), self.file_info['path'].stem):
-                    # Aggiunge o modifica l'anno nel file_info
-                    self.file_info['year'] = pattern.get('year')
-                    result['applied'] = True
+            if pattern.get('regex'):
+                is_a_match = re.search(pattern.get('regex'), self.file_info['path'].stem)
+                if pattern.get('ignore'):
+                    if is_a_match:
+                        self.file_info['ignore'] = True
+                        result['applied'] = True
+                if pattern.get('substitution'):
+                    result['applied'] = self.regex_rename(pattern)
+                if pattern.get('year'):
+                    if is_a_match:
+                        self.file_info['year'] = pattern.get('year')
+                        result['applied'] = True
         except re.error as e:
             self.logger.error(f"Errore nell'applicare la regola di rinomina: {e}")
             result['error'] = str(e)
